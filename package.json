@@ -1,0 +1,63 @@
+{
+  "name": "@nodertc/dtls-native",
+  "version": "0.0.0",
+  "description": "DTLS in nodejs",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "npx eslint src"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nodertc/dtls-native.git"
+  },
+  "keywords": [
+    "dtls",
+    "gnutls",
+    "nodertc",
+    "webrtc"
+  ],
+  "author": "Dmitriy Tsvettsikh <me@reklatsmasters.com>",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/nodertc/dtls-native/issues"
+  },
+  "files": [
+    "src",
+    "lib"
+  ],
+  "homepage": "https://github.com/nodertc/dtls-native#readme",
+  "eslintConfig": {
+    "extends": "@nodertc",
+    "rules": {
+      "no-underscore-dangle": "off"
+    },
+    "overrides": [
+      {
+        "files": [
+          "test/**/*.js"
+        ],
+        "env": {
+          "jest": true
+        },
+        "settings": {
+          "import/resolver": {
+            "node": {
+              "moduleDirectory": [
+                "node_modules",
+                "src"
+              ]
+            }
+          }
+        },
+        "rules": {
+          "require-jsdoc": "off"
+        }
+      }
+    ]
+  },
+  "devDependencies": {
+    "@nodertc/eslint-config": "^0.3.0",
+    "eslint": "^7.20.0",
+    "prettier": "^2.2.1"
+  }
+}
