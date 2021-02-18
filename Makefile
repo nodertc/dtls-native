@@ -7,12 +7,11 @@ ARCHIVE_GMPLIB=https://gmplib.org/download/gmp/gmp-6.2.1.tar.xz
 # Build
 ROOT_DIR=${PWD}
 MAKE=make
-CFLAGS="-O3"
-CONFIGURE=./configure CFLAGS=${CFLAGS} --prefix=${ROOT_DIR}/dependencies --disable-shared
+CFLAGS="-O3 -fPIC"
+CONFIGURE=./configure CFLAGS=${CFLAGS} --prefix=${ROOT_DIR}/dependencies
 CURL=curl -s
 EXTRACT_XZ=tar -xJ
 EXTRACT_GZ=tar -xz
-EMCC_DEBUG=0
 
 all: gnutls
 

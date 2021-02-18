@@ -17,9 +17,21 @@
 #include <node_api.h>
 #include <gnutls/gnutls.h>
 
+GNUTLS_SKIP_GLOBAL_INIT
+
+void dtls_cleanup_hook(void*);
+
 NAPI_MODULE_INIT() {
   napi_status status;
   napi_value gnutls_version;
+
+  int ret = gnutls_global_init();
+  if (ret != GNUTLS_E_SUCCESS) return NULL;
+
+  status = napi_add_env_cleanup_hook(env, dtls_cleanup_hook, NULL);
+  if (status != napi_ok) {
+    napi_throw_error(env, NULL, "cannot set clean up hook");
+  }
 
   status = napi_create_string_utf8(env, GNUTLS_VERSION, NAPI_AUTO_LENGTH, &gnutls_version);
   if (status != napi_ok) return NULL;
@@ -29,3 +41,10 @@ NAPI_MODULE_INIT() {
 
   return exports;
 }
+
+void dtls_cleanup_hook(void* data) {
+  gnutls_global_deinit();
+};
+
+// https://www.gnutls.org/manual/gnutls.html
+// https://gyp.gsrc.io/docs/InputFormatReference.md
