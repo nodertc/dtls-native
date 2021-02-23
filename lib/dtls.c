@@ -86,8 +86,29 @@ void dtls_close_session(napi_env env, void* handle, void* hint) {
 napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
   napi_status status;
   napi_value result;
+  int32_t flags = 0;
+  size_t argc = 1;
+  napi_value argv[1];
+
+  status = napi_get_cb_info(env, cb, &argc, argv, NULL, NULL);
+  if (status != napi_ok) return NULL;
+
+  if (argc == 0) {
+    napi_throw_error(env, NULL, "Expected GnuTLS session init flags");
+  }
+
+  status = napi_get_value_int32(env, argv[0], &flags);
+  if (status != napi_ok) return NULL;
+
+  if (flags <= 0) {
+    napi_throw_error(env, NULL, "Invalid GnuTLS session init flags");
+  }
 
   dtls_session_t* dtls = dtls_open_handle();
+  if (!dtls) return NULL;
+
+  int ret = gnutls_init(&dtls->session, (unsigned int)flags);
+  if (ret < 0) return NULL;
 
   // wrapper
   status = napi_create_object(env, &result);
