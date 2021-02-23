@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
 **/
-
+#define NAPI_EXPERIMENTAL
 #include <node_api.h>
 #include <gnutls/gnutls.h>
 #include <stdlib.h>
@@ -26,11 +26,9 @@ typedef struct {
   gnutls_priority_t priority;
 } dtls_session_t;
 
-/*
 static const napi_type_tag dtls_session_type_tag = {
   0x82c6a5dbf795416c, 0xbe0e0c47ebbfaf18
 };
-*/
 
 void dtls_cleanup_hook(void*);
 napi_value dtls_create_session(napi_env env, napi_callback_info cb);
@@ -95,17 +93,11 @@ napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
   status = napi_create_object(env, &result);
   if (status != napi_ok) return NULL;
 
-  // experimental api :(
-  // status = napi_type_tag_object(env, result, &dtls_session_type_tag);
-  // if (status != napi_ok) return NULL;
+  status = napi_type_tag_object(env, result, &dtls_session_type_tag);
+  if (status != napi_ok) return NULL;
 
   status = napi_wrap(env, result, dtls, &dtls_close_session, NULL, NULL);
   if (status != napi_ok) return NULL;
 
   return result;
 }
-
-// create an object
-// create a handle with a reference to a session
-// wrap the handle by the object
-// free the memory on closing the socket
