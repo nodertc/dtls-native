@@ -4,7 +4,7 @@
   "description": "DTLS in nodejs",
   "main": "src/index.js",
   "scripts": {
-    "test": "npx eslint src"
+    "test": "npx eslint src && npx jest"
   },
   "repository": {
     "type": "git",
@@ -23,7 +23,9 @@
   },
   "files": [
     "src",
-    "lib"
+    "lib",
+    "Makefile",
+    "binding.gyp"
   ],
   "homepage": "https://github.com/nodertc/dtls-native#readme",
   "eslintConfig": {
@@ -57,7 +59,30 @@
   },
   "devDependencies": {
     "@nodertc/eslint-config": "^0.3.0",
+    "@types/jest": "^26.0.20",
+    "@types/node": "^14.14.31",
     "eslint": "^7.20.0",
+    "jest": "^26.6.3",
     "prettier": "^2.2.1"
+  },
+  "jest": {
+    "modulePaths": [
+      "<rootDir>",
+      "<rootDir>/src"
+    ],
+    "testMatch": [
+      "**/test/unit/**/*.js"
+    ],
+    "testPathIgnorePatterns": [
+      "<rootDir>/node_modules/"
+    ],
+    "coverageDirectory": "<rootDir>/coverage",
+    "collectCoverageFrom": [
+      "**/src/*.js"
+    ],
+    "coveragePathIgnorePatterns": [
+      "<rootDir>/node_modules/"
+    ],
+    "cacheDirectory": ".jest-cache"
   }
 }
