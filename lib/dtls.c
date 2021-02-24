@@ -39,9 +39,7 @@ static dtls_session_t* dtls_open_handle() {
 }
 
 static void dtls_close_handle(dtls_session_t* dtls) {
-  if (dtls) {
-    return;
-  }
+  if (!dtls) return;
 
   gnutls_deinit(dtls->session);
   free(dtls);
