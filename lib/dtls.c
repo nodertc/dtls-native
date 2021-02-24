@@ -15,6 +15,7 @@
 **/
 #define NAPI_EXPERIMENTAL
 #include <node_api.h>
+#include <uv.h>
 #include <gnutls/gnutls.h>
 #include <stdlib.h>
 
@@ -30,9 +31,9 @@ static const napi_type_tag dtls_session_type_tag = {
   0x82c6a5dbf795416c, 0xbe0e0c47ebbfaf18
 };
 
-void dtls_cleanup_hook(void*);
-napi_value dtls_create_session(napi_env env, napi_callback_info cb);
-void dtls_close_session(napi_env env, void* handle, void*);
+static void dtls_cleanup_hook(void*);
+static napi_value dtls_create_session(napi_env env, napi_callback_info cb);
+static void dtls_close_session(napi_env env, void* handle, void*);
 
 static dtls_session_t* dtls_open_handle() {
   return (dtls_session_t*) malloc(sizeof(dtls_session_t));
@@ -41,6 +42,7 @@ static dtls_session_t* dtls_open_handle() {
 static void dtls_close_handle(dtls_session_t* dtls) {
   if (!dtls) return;
 
+  gnutls_certificate_free_credentials(dtls->credentials);
   gnutls_deinit(dtls->session);
   free(dtls);
 }
@@ -70,23 +72,24 @@ NAPI_MODULE_INIT() {
   return exports;
 }
 
-void dtls_cleanup_hook(void* data) {
+static void dtls_cleanup_hook(void* data) {
   gnutls_global_deinit();
 }
 
 // https://www.gnutls.org/manual/gnutls.html
 // https://gyp.gsrc.io/docs/InputFormatReference.md
 
-void dtls_close_session(napi_env env, void* handle, void* hint) {
+static void dtls_close_session(napi_env env, void* handle, void* hint) {
   dtls_close_handle((dtls_session_t*) handle);
 }
 
-napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
+static napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
   napi_status status;
   napi_value result;
   int32_t flags = 0;
   size_t argc = 1;
   napi_value argv[1];
+  int ret = 0;
 
   status = napi_get_cb_info(env, cb, &argc, argv, NULL, NULL);
   if (status != napi_ok) return NULL;
@@ -105,7 +108,10 @@ napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
   dtls_session_t* dtls = dtls_open_handle();
   if (!dtls) return NULL;
 
-  int ret = gnutls_init(&dtls->session, (unsigned int)flags);
+  ret = gnutls_init(&dtls->session, (unsigned int)flags);
+  if (ret < 0) return NULL;
+
+  ret = gnutls_certificate_allocate_credentials(&dtls->credentials);
   if (ret < 0) return NULL;
 
   // wrapper
