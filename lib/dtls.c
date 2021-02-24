@@ -18,6 +18,10 @@
 #include <uv.h>
 #include <gnutls/gnutls.h>
 #include <stdlib.h>
+#include <assert.h>
+
+#define CALL(x) assert((x) >= 0)
+#define NAPI_CALL(x) if ((x) != napi_ok) return NULL
 
 GNUTLS_SKIP_GLOBAL_INIT
 
@@ -48,26 +52,15 @@ static void dtls_close_handle(dtls_session_t* dtls) {
 }
 
 NAPI_MODULE_INIT() {
-  napi_status status;
   napi_value gnutls_version, create_session;
 
-  int ret = gnutls_global_init();
-  if (ret != GNUTLS_E_SUCCESS) return NULL;
+  CALL(gnutls_global_init());
 
-  status = napi_add_env_cleanup_hook(env, dtls_cleanup_hook, NULL);
-  if (status != napi_ok) return NULL;
-
-  status = napi_create_string_utf8(env, GNUTLS_VERSION, NAPI_AUTO_LENGTH, &gnutls_version);
-  if (status != napi_ok) return NULL;
-
-  status = napi_set_named_property(env, exports, "gnutls_version", gnutls_version);
-  if (status != napi_ok) return NULL;
-
-  status = napi_create_function(env, NULL, 0, dtls_create_session, NULL, &create_session);
-  if (status != napi_ok) return NULL;
-
-  status = napi_set_named_property(env, exports, "create_session", create_session);
-  if (status != napi_ok) return NULL;
+  NAPI_CALL(napi_add_env_cleanup_hook(env, dtls_cleanup_hook, NULL));
+  NAPI_CALL(napi_create_string_utf8(env, GNUTLS_VERSION, NAPI_AUTO_LENGTH, &gnutls_version));
+  NAPI_CALL(napi_set_named_property(env, exports, "gnutls_version", gnutls_version));
+  NAPI_CALL(napi_create_function(env, NULL, 0, dtls_create_session, NULL, &create_session));
+  NAPI_CALL(napi_set_named_property(env, exports, "create_session", create_session));
 
   return exports;
 }
@@ -84,22 +77,18 @@ static void dtls_close_session(napi_env env, void* handle, void* hint) {
 }
 
 static napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
-  napi_status status;
   napi_value result;
   int32_t flags = 0;
   size_t argc = 1;
   napi_value argv[1];
-  int ret = 0;
 
-  status = napi_get_cb_info(env, cb, &argc, argv, NULL, NULL);
-  if (status != napi_ok) return NULL;
+  NAPI_CALL(napi_get_cb_info(env, cb, &argc, argv, NULL, NULL));
 
   if (argc == 0) {
     napi_throw_error(env, NULL, "Expected GnuTLS session init flags");
   }
 
-  status = napi_get_value_int32(env, argv[0], &flags);
-  if (status != napi_ok) return NULL;
+  NAPI_CALL(napi_get_value_int32(env, argv[0], &flags));
 
   if (flags <= 0) {
     napi_throw_error(env, NULL, "Invalid GnuTLS session init flags");
@@ -108,21 +97,13 @@ static napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
   dtls_session_t* dtls = dtls_open_handle();
   if (!dtls) return NULL;
 
-  ret = gnutls_init(&dtls->session, (unsigned int)flags);
-  if (ret < 0) return NULL;
+  CALL(gnutls_init(&dtls->session, (unsigned int)flags));
+  CALL(gnutls_certificate_allocate_credentials(&dtls->credentials));
 
-  ret = gnutls_certificate_allocate_credentials(&dtls->credentials);
-  if (ret < 0) return NULL;
 
-  // wrapper
-  status = napi_create_object(env, &result);
-  if (status != napi_ok) return NULL;
-
-  status = napi_type_tag_object(env, result, &dtls_session_type_tag);
-  if (status != napi_ok) return NULL;
-
-  status = napi_wrap(env, result, dtls, &dtls_close_session, NULL, NULL);
-  if (status != napi_ok) return NULL;
+  NAPI_CALL(napi_create_object(env, &result));
+  NAPI_CALL(napi_type_tag_object(env, result, &dtls_session_type_tag));
+  NAPI_CALL(napi_wrap(env, result, dtls, &dtls_close_session, NULL, NULL));
 
   return result;
 }
