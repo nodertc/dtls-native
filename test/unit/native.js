@@ -2,7 +2,7 @@
 
 const { dtls, constants } = require('../../src');
 
-const { GNUTLS_CLIENT, GNUTLS_DATAGRAM } = constants;
+const { GNUTLS_CLIENT, GNUTLS_DATAGRAM, GNUTLS_NONBLOCK } = constants;
 
 test('check handle', () => {
   expect(dtls).not.toBeNull();
@@ -47,5 +47,13 @@ describe('test mtu', () => {
   it('should check arguments on get mtu', () => {
     expect(() => dtls.get_mtu()).toThrowError('Missing arguments');
     expect(() => dtls.get_mtu({})).toThrowError('Invalid session handle');
+  });
+});
+
+test('should call handshake', (done) => {
+  const session = dtls.create_session(GNUTLS_CLIENT | GNUTLS_DATAGRAM | GNUTLS_NONBLOCK);
+  dtls.handshake(session, (errno) => {
+    expect(errno).toBeLessThan(0);
+    done();
   });
 });
