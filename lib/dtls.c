@@ -18,6 +18,7 @@
 #include <gnutls/gnutls.h>
 #include <gnutls/dtls.h>
 #include <stdlib.h>
+#include <string.h>
 #include <assert.h>
 
 #define CALL(x) assert((x) >= 0)
@@ -64,11 +65,22 @@ typedef struct {
 } handshake_priv_t;
 
 typedef struct {
+  napi_threadsafe_function push_func;
+  bool is_push_func_created;
+} transport_priv_t;
+
+typedef struct {
   gnutls_session_t session;
   gnutls_certificate_credentials_t credentials;
   gnutls_priority_t priority;
   handshake_priv_t handshake;
+  transport_priv_t transport;
 } dtls_session_t;
+
+typedef struct {
+  void* buf;
+  size_t length;
+} dtls_datum_t;
 
 static const napi_type_tag dtls_session_type_tag = {
   0x82c6a5dbf795416c, 0xbe0e0c47ebbfaf18
@@ -82,6 +94,9 @@ static napi_value dtls_get_mtu(napi_env env, napi_callback_info cb);
 static napi_value dtls_handshake(napi_env env, napi_callback_info cb);
 static void dtls_handshake_execute(napi_env env, void* data);
 static void dtls_handshake_complete(napi_env env, napi_status status, void* data);
+static ssize_t dtls_push_func(gnutls_transport_ptr_t ptr, const void* buf, size_t length);
+static void dtls_push_func_call_js(napi_env env, napi_value cb, void* context, void* data);
+static napi_value dtls_set_push_func(napi_env env, napi_callback_info cb);
 
 static dtls_session_t* dtls_open_handle() {
   return (dtls_session_t*) gnutls_malloc(sizeof(dtls_session_t));
@@ -97,13 +112,17 @@ static void dtls_close_handle(napi_env env, dtls_session_t* dtls) {
     napi_delete_reference(env, dtls->handshake.callback);
   }
 
+  if (dtls->transport.is_push_func_created) {
+    napi_release_threadsafe_function(dtls->transport.push_func, napi_tsfn_abort);
+  }
+
   gnutls_certificate_free_credentials(dtls->credentials);
   gnutls_deinit(dtls->session);
   gnutls_free(dtls);
 }
 
 NAPI_MODULE_INIT() {
-  napi_value gnutls_version, create_session, set_mtu, get_mtu, handshake;
+  napi_value gnutls_version, create_session, set_mtu, get_mtu, handshake, push_func;
 
   CALL(gnutls_global_init());
 
@@ -123,6 +142,9 @@ NAPI_MODULE_INIT() {
 
   NAPI_CALL(napi_create_function(env, NULL, 0, dtls_handshake, NULL, &handshake));
   NAPI_CALL(napi_set_named_property(env, exports, "handshake", handshake));
+
+  NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_push_func, NULL, &push_func));
+  NAPI_CALL(napi_set_named_property(env, exports, "set_push_func", push_func));
 
   return exports;
 }
@@ -162,8 +184,14 @@ static napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
   CALL(gnutls_init(&dtls->session, (unsigned int)flags));
   CALL(gnutls_certificate_allocate_credentials(&dtls->credentials));
   CALL(gnutls_set_default_priority(dtls->session));
+  gnutls_session_set_ptr(dtls->session, dtls);
+  gnutls_transport_set_ptr(dtls->session, dtls);
+
+  gnutls_transport_set_push_function(dtls->session, dtls_push_func);
+
   dtls->handshake.status = dtls_async_work_init;
   dtls->handshake.errcode = 0;
+  dtls->transport.is_push_func_created = false;
 
   NAPI_CALL(napi_create_object(env, &result));
   NAPI_CALL(napi_type_tag_object(env, result, &dtls_session_type_tag));
@@ -292,4 +320,89 @@ static void dtls_handshake_complete(napi_env env, napi_status status, void* data
 
   NAPI_CALL(napi_delete_async_work(env, dtls->handshake.work));
   NAPI_CALL(napi_delete_reference(env, dtls->handshake.callback));
+}
+
+static ssize_t dtls_push_func(gnutls_transport_ptr_t ptr, const void* buf, size_t length) {
+  dtls_session_t* dtls = ptr;
+  dtls_datum_t* data = (dtls_datum_t*) gnutls_malloc(sizeof(dtls_datum_t));
+  napi_status status;
+
+  data->length = length;
+  data->buf = gnutls_malloc(length);
+  memcpy(data->buf, buf, length);
+
+  status = napi_acquire_threadsafe_function(dtls->transport.push_func);
+  if (status != napi_ok) goto release;
+
+  status = napi_call_threadsafe_function(dtls->transport.push_func, (void*)data, napi_tsfn_blocking);
+  if (status != napi_ok) goto release;
+
+  status = napi_release_threadsafe_function(dtls->transport.push_func, napi_tsfn_release);
+  if (status != napi_ok) goto exit; // do not need to free memory, callback pushed to the queue
+
+  if (status != napi_ok) {
+  release:
+    gnutls_free(data->buf);
+    gnutls_free(data);
+  exit:
+    return GNUTLS_E_PUSH_ERROR;
+  }
+
+  return length;
+}
+
+static void dtls_push_func_call_js(napi_env env, napi_value cb, void* context, void* data) {
+  dtls_datum_t* packet = data;
+  napi_value buffer, globalThis;
+  size_t argc = 1;
+
+  NAPI_CALL(napi_create_buffer_copy(env, packet->length, packet->buf, NULL, &buffer));
+
+  gnutls_free(packet->buf);
+  gnutls_free(packet);
+
+  napi_value* argv = &buffer;
+  NAPI_CALL(napi_get_global(env, &globalThis));
+  NAPI_CALL(napi_call_function(env, globalThis, cb, argc, argv, NULL));
+}
+
+static napi_value dtls_set_push_func(napi_env env, napi_callback_info cb) {
+  size_t argc = 2;
+  napi_value argv[2], result, resource_name;
+  bool is_dtls_session;
+  dtls_session_t* dtls;
+
+  NAPI_CALL(napi_get_cb_info(env, cb, &argc, argv, NULL, NULL));
+  if (argc < 2) {
+    NAPI_THROW("Missing arguments");
+  }
+
+  NAPI_CALL(napi_check_object_type_tag(env, argv[0], &dtls_session_type_tag, &is_dtls_session));
+  if (!is_dtls_session) {
+    NAPI_THROW_TYPE("Invalid session handle");
+  }
+
+  NAPI_CALL(napi_unwrap(env, argv[0], (void**)&dtls));
+
+  // TODO: what is initial_thread_count and max_queue_size
+  // TODO: how to clearly release
+  NAPI_CALL(napi_create_string_utf8(env, "dtls::push_func", NAPI_AUTO_LENGTH, &resource_name));
+  NAPI_CALL(napi_create_threadsafe_function(
+                                            env,
+                                            argv[1],
+                                            NULL,
+                                            resource_name,
+                                            0,
+                                            1, // Once the number of threads making use of
+                                               // a napi_threadsafe_function reaches zero, no further threads
+                                               // can start making use of it.
+                                            NULL,
+                                            NULL,
+                                            (void*)dtls,
+                                            dtls_push_func_call_js,
+                                            &dtls->transport.push_func
+  ));
+  dtls->transport.is_push_func_created = true;
+
+  return result;
 }
