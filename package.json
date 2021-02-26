@@ -27,6 +27,9 @@
     "Makefile",
     "binding.gyp"
   ],
+  "engines": {
+    "node": "^12.19 || ^14.8"
+  },
   "homepage": "https://github.com/nodertc/dtls-native#readme",
   "eslintConfig": {
     "extends": "@nodertc",

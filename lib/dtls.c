@@ -18,8 +18,10 @@
 #include <gnutls/gnutls.h>
 #include <gnutls/dtls.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <errno.h>
 
 #define CALL(x) assert((x) >= 0)
 
@@ -47,6 +49,9 @@
 #define NAPI_CALL(x) NAPI_CALL_HELPER(env, x, "Unexpected error", NULL)
 #define NAPI_THROW(x) NAPI_THROW_HELPER(env, napi_throw_error, x, NULL)
 #define NAPI_THROW_TYPE(x) NAPI_THROW_HELPER(env, napi_throw_type_error, x, NULL)
+
+static bool debugMode = false;
+#define DBG(...) if (debugMode) { printf(__VA_ARGS__); printf("\n"); }
 
 GNUTLS_SKIP_GLOBAL_INIT
 
@@ -97,6 +102,8 @@ static void dtls_handshake_complete(napi_env env, napi_status status, void* data
 static ssize_t dtls_push_func(gnutls_transport_ptr_t ptr, const void* buf, size_t length);
 static void dtls_push_func_call_js(napi_env env, napi_value cb, void* context, void* data);
 static napi_value dtls_set_push_func(napi_env env, napi_callback_info cb);
+static ssize_t dtls_pull_func(gnutls_transport_ptr_t ptr, void *data, size_t size);
+static napi_value dtls_set_debug_mode(napi_env env, napi_callback_info cb);
 
 static dtls_session_t* dtls_open_handle() {
   return (dtls_session_t*) gnutls_malloc(sizeof(dtls_session_t));
@@ -122,7 +129,7 @@ static void dtls_close_handle(napi_env env, dtls_session_t* dtls) {
 }
 
 NAPI_MODULE_INIT() {
-  napi_value gnutls_version, create_session, set_mtu, get_mtu, handshake, push_func;
+  napi_value gnutls_version, create_session, set_mtu, get_mtu, handshake, push_func, set_debug_mode;
 
   CALL(gnutls_global_init());
 
@@ -146,10 +153,14 @@ NAPI_MODULE_INIT() {
   NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_push_func, NULL, &push_func));
   NAPI_CALL(napi_set_named_property(env, exports, "set_push_func", push_func));
 
+  NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_debug_mode, NULL, &set_debug_mode));
+  NAPI_CALL(napi_set_named_property(env, exports, "set_debug_mode", set_debug_mode));
+
   return exports;
 }
 
 static void dtls_cleanup_hook(void* data) {
+  DBG("dtls: call dtls_cleanup_hook");
   gnutls_global_deinit();
 }
 
@@ -157,6 +168,7 @@ static void dtls_cleanup_hook(void* data) {
 // https://gyp.gsrc.io/docs/InputFormatReference.md
 
 static void dtls_close_session(napi_env env, void* handle, void* hint) {
+  DBG("dtls: call close session");
   dtls_close_handle(env, (dtls_session_t*) handle);
 }
 
@@ -188,6 +200,7 @@ static napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
   gnutls_transport_set_ptr(dtls->session, dtls);
 
   gnutls_transport_set_push_function(dtls->session, dtls_push_func);
+  gnutls_transport_set_pull_function(dtls->session, dtls_pull_func);
 
   dtls->handshake.status = dtls_async_work_init;
   dtls->handshake.errcode = 0;
@@ -253,6 +266,8 @@ static napi_value dtls_get_mtu(napi_env env, napi_callback_info cb) {
 }
 
 static napi_value dtls_handshake(napi_env env, napi_callback_info cb) {
+  DBG("dtls: start handshake polling");
+
   size_t argc = 2;
   napi_value argv[2], result, resource_name;
   bool is_dtls_session;
@@ -292,12 +307,20 @@ static napi_value dtls_handshake(napi_env env, napi_callback_info cb) {
 }
 
 static void dtls_handshake_execute(napi_env env, void* data) {
+  DBG("dtls: execute handshake worker");
   dtls_session_t* dtls = data;
+  int err = 0;
 
-  dtls->handshake.errcode = gnutls_handshake(dtls->session);
+  do {
+    err = gnutls_handshake(dtls->session);
+  } while (err == GNUTLS_E_INTERRUPTED || err == GNUTLS_E_AGAIN);
+
+  dtls->handshake.errcode = err;
 }
 
 static void dtls_handshake_complete(napi_env env, napi_status status, void* data) {
+  DBG("dtls: complete handshake worker");
+
   dtls_session_t* dtls = data;
   napi_value callback, globalThis, message, err;
   size_t argc = 1;
@@ -323,6 +346,8 @@ static void dtls_handshake_complete(napi_env env, napi_status status, void* data
 }
 
 static ssize_t dtls_push_func(gnutls_transport_ptr_t ptr, const void* buf, size_t length) {
+  DBG("dtls: call push_func");
+
   dtls_session_t* dtls = ptr;
   dtls_datum_t* data = (dtls_datum_t*) gnutls_malloc(sizeof(dtls_datum_t));
   napi_status status;
@@ -345,13 +370,17 @@ static ssize_t dtls_push_func(gnutls_transport_ptr_t ptr, const void* buf, size_
     gnutls_free(data->buf);
     gnutls_free(data);
   exit:
+    DBG("dtls: push_func failed");
     return GNUTLS_E_PUSH_ERROR;
   }
 
+  DBG("dtls: complete push_func");
   return length;
 }
 
 static void dtls_push_func_call_js(napi_env env, napi_value cb, void* context, void* data) {
+  DBG("dtls: call push_func_call_js");
+
   dtls_datum_t* packet = data;
   napi_value buffer, globalThis;
   size_t argc = 1;
@@ -367,6 +396,7 @@ static void dtls_push_func_call_js(napi_env env, napi_value cb, void* context, v
 }
 
 static napi_value dtls_set_push_func(napi_env env, napi_callback_info cb) {
+  DBG("dtls: set push_func");
   size_t argc = 2;
   napi_value argv[2], result, resource_name;
   bool is_dtls_session;
@@ -405,4 +435,24 @@ static napi_value dtls_set_push_func(napi_env env, napi_callback_info cb) {
   dtls->transport.is_push_func_created = true;
 
   return result;
+}
+
+static ssize_t dtls_pull_func(gnutls_transport_ptr_t ptr, void *data, size_t size) {
+  DBG("dtls: call pull_func");
+  dtls_session_t* dtls = ptr;
+  gnutls_transport_set_errno(dtls->session, EAGAIN);
+  return -1;
+}
+
+static napi_value dtls_set_debug_mode(napi_env env, napi_callback_info cb) {
+  size_t argc = 1;
+  napi_value argv[1];
+
+  NAPI_CALL(napi_get_cb_info(env, cb, &argc, argv, NULL, NULL));
+  if (argc == 0) {
+    NAPI_THROW("Missing arguments");
+  }
+
+  NAPI_CALL(napi_get_value_bool(env, argv[0], &debugMode));
+  return NULL;
 }
