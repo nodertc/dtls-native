@@ -15,22 +15,45 @@
 **/
 #define NAPI_EXPERIMENTAL
 #include <node_api.h>
-#include <uv.h>
 #include <gnutls/gnutls.h>
 #include <gnutls/dtls.h>
 #include <stdlib.h>
 #include <assert.h>
 
 #define CALL(x) assert((x) >= 0)
-#define NAPI_CALL(x) if ((x) != napi_ok) return NULL
-#define NAPI_STRICT(x) assert((x) == napi_ok)
+
+#define NAPI_CALL_HELPER(env, call, errmsg, ret)                  \
+  do {                                                            \
+    if ((call) != napi_ok) {                                      \
+      const napi_extended_error_info* error_info = NULL;          \
+      napi_get_last_error_info((env), &error_info);               \
+      bool is_pending;                                            \
+      napi_is_exception_pending((env), &is_pending);              \
+      if (!is_pending) {                                          \
+        const char* message = (error_info->error_message == NULL) \
+            ? errmsg                                              \
+            : error_info->error_message;                          \
+        napi_throw_error((env), NULL, message);                   \
+        return ret;                                               \
+      }                                                           \
+    }                                                             \
+  } while(0)
+
+#define NAPI_THROW_HELPER(env, _napi_throw, message, ret)         \
+  _napi_throw((env), NULL, message);                              \
+  return ret
+
+#define NAPI_CALL(x) NAPI_CALL_HELPER(env, x, "Unexpected error", NULL)
+#define NAPI_THROW(x) NAPI_THROW_HELPER(env, napi_throw_error, x, NULL)
+#define NAPI_THROW_TYPE(x) NAPI_THROW_HELPER(env, napi_throw_type_error, x, NULL)
 
 GNUTLS_SKIP_GLOBAL_INIT
 
 typedef enum {
   dtls_async_work_init = 0,
   dtls_async_work_executed = 1,
-  dtls_async_work_completed = 2
+  dtls_async_work_completed = 2,
+  dtls_async_work_canceled = 3
 } dtls_async_work_status_t;
 
 typedef struct {
@@ -65,10 +88,10 @@ static dtls_session_t* dtls_open_handle() {
 }
 
 static void dtls_close_handle(napi_env env, dtls_session_t* dtls) {
-  if (!dtls) return;
+  if (dtls == NULL) return;
 
   if (dtls->handshake.status == dtls_async_work_executed) {
-    // no status check because we don't need early return
+    // seg fault may be here if work completes before
     napi_cancel_async_work(env, dtls->handshake.work);
     napi_delete_async_work(env, dtls->handshake.work);
     napi_delete_reference(env, dtls->handshake.callback);
@@ -124,17 +147,17 @@ static napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
   NAPI_CALL(napi_get_cb_info(env, cb, &argc, argv, NULL, NULL));
 
   if (argc == 0) {
-    napi_throw_error(env, NULL, "Expected GnuTLS session init flags");
+    NAPI_THROW("Expected GnuTLS session init flags");
   }
 
   NAPI_CALL(napi_get_value_int32(env, argv[0], &flags));
 
   if (flags <= 0) {
-    napi_throw_error(env, NULL, "Invalid GnuTLS session init flags");
+    NAPI_THROW("Invalid GnuTLS session init flags");
   }
 
   dtls_session_t* dtls = dtls_open_handle();
-  if (!dtls) return NULL;
+  if (dtls == NULL) return NULL;
 
   CALL(gnutls_init(&dtls->session, (unsigned int)flags));
   CALL(gnutls_certificate_allocate_credentials(&dtls->credentials));
@@ -158,17 +181,17 @@ static napi_value dtls_set_mtu(napi_env env, napi_callback_info cb) {
 
   NAPI_CALL(napi_get_cb_info(env, cb, &argc, argv, NULL, NULL));
   if (argc < 2) {
-    napi_throw_error(env, NULL, "Missing arguments");
+    NAPI_THROW("Missing arguments");
   }
 
   NAPI_CALL(napi_check_object_type_tag(env, argv[0], &dtls_session_type_tag, &is_dtls_session));
   if (!is_dtls_session) {
-    napi_throw_type_error(env, NULL, "Invalid session handle");
+    NAPI_THROW_TYPE("Invalid session handle");
   }
 
   NAPI_CALL(napi_get_value_int32(env, argv[1], &mtu));
   if (mtu <= 0) {
-    napi_throw_error(env, NULL, "Invalid mtu value");
+    NAPI_THROW("Invalid mtu value");
   }
 
   NAPI_CALL(napi_unwrap(env, argv[0], (void**)&dtls));
@@ -186,12 +209,12 @@ static napi_value dtls_get_mtu(napi_env env, napi_callback_info cb) {
 
   NAPI_CALL(napi_get_cb_info(env, cb, &argc, argv, NULL, NULL));
   if (argc == 0) {
-    napi_throw_error(env, NULL, "Missing arguments");
+    NAPI_THROW("Missing arguments");
   }
 
   NAPI_CALL(napi_check_object_type_tag(env, argv[0], &dtls_session_type_tag, &is_dtls_session));
   if (!is_dtls_session) {
-    napi_throw_type_error(env, NULL, "Invalid session handle");
+    NAPI_THROW_TYPE("Invalid session handle");
   }
 
   NAPI_CALL(napi_unwrap(env, argv[0], (void**)&dtls));
@@ -209,18 +232,18 @@ static napi_value dtls_handshake(napi_env env, napi_callback_info cb) {
 
   NAPI_CALL(napi_get_cb_info(env, cb, &argc, argv, NULL, NULL));
   if (argc < 2) {
-    napi_throw_error(env, NULL, "Missing arguments");
+    NAPI_THROW("Missing arguments");
   }
 
   NAPI_CALL(napi_check_object_type_tag(env, argv[0], &dtls_session_type_tag, &is_dtls_session));
   if (!is_dtls_session) {
-    napi_throw_type_error(env, NULL, "Invalid session handle");
+    NAPI_THROW_TYPE("Invalid session handle");
   }
 
   NAPI_CALL(napi_unwrap(env, argv[0], (void**)&dtls));
 
   if (dtls->handshake.status != dtls_async_work_init) {
-    napi_throw_error(env, NULL, "Handshake already called");
+    NAPI_THROW("Handshake already called");
   }
 
   NAPI_CALL(napi_create_reference(env, argv[1], 0, &dtls->handshake.callback));
@@ -248,19 +271,25 @@ static void dtls_handshake_execute(napi_env env, void* data) {
 
 static void dtls_handshake_complete(napi_env env, napi_status status, void* data) {
   dtls_session_t* dtls = data;
-  napi_value callback, globalThis, errcode;
+  napi_value callback, globalThis, message, err;
   size_t argc = 1;
+
+  if (dtls->handshake.status != dtls_async_work_executed) {
+    return;
+  }
 
   dtls->handshake.status = dtls_async_work_completed;
 
-  NAPI_STRICT(napi_create_int32(env, dtls->handshake.errcode, &errcode));
-  napi_value* argv = &errcode;
+  if (dtls->handshake.errcode < GNUTLS_E_SUCCESS) {
+    NAPI_CALL(napi_create_string_utf8(env, gnutls_strerror(dtls->handshake.errcode), NAPI_AUTO_LENGTH, &message));
+    NAPI_CALL(napi_create_error(env, NULL, message, &err));
+  }
+  napi_value* argv = &err;
 
-  // mem leak if not ok
-  NAPI_STRICT(napi_get_global(env, &globalThis));
-  NAPI_STRICT(napi_get_reference_value(env, dtls->handshake.callback, &callback));
-  NAPI_STRICT(napi_call_function(env, globalThis, callback, argc, argv, NULL));
+  NAPI_CALL(napi_get_global(env, &globalThis));
+  NAPI_CALL(napi_get_reference_value(env, dtls->handshake.callback, &callback));
+  NAPI_CALL(napi_call_function(env, globalThis, callback, argc, argv, NULL));
 
-  NAPI_STRICT(napi_delete_async_work(env, dtls->handshake.work));
-  NAPI_STRICT(napi_delete_reference(env, dtls->handshake.callback));
+  NAPI_CALL(napi_delete_async_work(env, dtls->handshake.work));
+  NAPI_CALL(napi_delete_reference(env, dtls->handshake.callback));
 }

@@ -10,7 +10,7 @@
       "sources": [
         "lib/dtls.c"
       ],
-      "cflags": ["-fPIC"],
+      "cflags": ["-fPIC", "-save-temps"],
       "include_dirs":["<(module_root_dir)/lib", "<(module_root_dir)/dependencies/include"],
       "link_settings": {
         "libraries": [
