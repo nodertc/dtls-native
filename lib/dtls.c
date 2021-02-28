@@ -52,6 +52,7 @@
 
 static bool debugMode = false;
 #define DBG(...) if (debugMode) { printf(__VA_ARGS__); printf("\n"); }
+#define MAX_UDP 1500
 
 GNUTLS_SKIP_GLOBAL_INIT
 
@@ -72,6 +73,13 @@ typedef struct {
 typedef struct {
   napi_threadsafe_function push_func;
   bool is_push_func_created;
+  napi_threadsafe_function pull_func;
+  bool is_pull_func_created;
+
+  void* pull_data;
+  size_t pull_data_allocated_length;
+  size_t pull_data_awaited_length;
+  size_t pull_data_offset_start;
 } transport_priv_t;
 
 typedef struct {
@@ -103,7 +111,10 @@ static ssize_t dtls_push_func(gnutls_transport_ptr_t ptr, const void* buf, size_
 static void dtls_push_func_call_js(napi_env env, napi_value cb, void* context, void* data);
 static napi_value dtls_set_push_func(napi_env env, napi_callback_info cb);
 static ssize_t dtls_pull_func(gnutls_transport_ptr_t ptr, void *data, size_t size);
+static int dtls_pull_timeout_func(gnutls_transport_ptr_t ptr, unsigned int ms);
 static napi_value dtls_set_debug_mode(napi_env env, napi_callback_info cb);
+static napi_value dtls_set_pull_func(napi_env env, napi_callback_info cb);
+static void dtls_pull_func_call_js(napi_env env, napi_value cb, void* context, void* data);
 
 static dtls_session_t* dtls_open_handle() {
   return (dtls_session_t*) gnutls_malloc(sizeof(dtls_session_t));
@@ -123,13 +134,18 @@ static void dtls_close_handle(napi_env env, dtls_session_t* dtls) {
     napi_release_threadsafe_function(dtls->transport.push_func, napi_tsfn_abort);
   }
 
+  if (dtls->transport.is_pull_func_created) {
+    NAPI_CALL(napi_release_threadsafe_function(dtls->transport.pull_func, napi_tsfn_abort));
+  }
+
+  gnutls_free(dtls->transport.pull_data);
   gnutls_certificate_free_credentials(dtls->credentials);
   gnutls_deinit(dtls->session);
   gnutls_free(dtls);
 }
 
 NAPI_MODULE_INIT() {
-  napi_value gnutls_version, create_session, set_mtu, get_mtu, handshake, push_func, set_debug_mode;
+  napi_value gnutls_version, create_session, set_mtu, get_mtu, handshake, push_func, pull_func, set_debug_mode;
 
   CALL(gnutls_global_init());
 
@@ -151,10 +167,13 @@ NAPI_MODULE_INIT() {
   NAPI_CALL(napi_set_named_property(env, exports, "handshake", handshake));
 
   NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_push_func, NULL, &push_func));
-  NAPI_CALL(napi_set_named_property(env, exports, "set_push_func", push_func));
+  NAPI_CALL(napi_set_named_property(env, exports, "send", push_func));
 
   NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_debug_mode, NULL, &set_debug_mode));
   NAPI_CALL(napi_set_named_property(env, exports, "set_debug_mode", set_debug_mode));
+
+  NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_pull_func, NULL, &pull_func));
+  NAPI_CALL(napi_set_named_property(env, exports, "recv", pull_func));
 
   return exports;
 }
@@ -201,10 +220,17 @@ static napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
 
   gnutls_transport_set_push_function(dtls->session, dtls_push_func);
   gnutls_transport_set_pull_function(dtls->session, dtls_pull_func);
+  gnutls_transport_set_pull_timeout_function(dtls->session, dtls_pull_timeout_func);
 
   dtls->handshake.status = dtls_async_work_init;
   dtls->handshake.errcode = 0;
   dtls->transport.is_push_func_created = false;
+
+  dtls->transport.pull_data_awaited_length = 0;
+  dtls->transport.pull_data_offset_start = 0;
+  dtls->transport.pull_data = gnutls_malloc(MAX_UDP);
+  dtls->transport.pull_data_allocated_length = MAX_UDP;
+  dtls->transport.is_pull_func_created = false;
 
   NAPI_CALL(napi_create_object(env, &result));
   NAPI_CALL(napi_type_tag_object(env, result, &dtls_session_type_tag));
@@ -438,10 +464,63 @@ static napi_value dtls_set_push_func(napi_env env, napi_callback_info cb) {
 }
 
 static ssize_t dtls_pull_func(gnutls_transport_ptr_t ptr, void *data, size_t size) {
-  DBG("dtls: call pull_func");
   dtls_session_t* dtls = ptr;
-  gnutls_transport_set_errno(dtls->session, EAGAIN);
-  return -1;
+  size_t length = 0;
+  napi_status status;
+
+
+  if (dtls->transport.pull_data_offset_start >= dtls->transport.pull_data_awaited_length && dtls->transport.pull_data_awaited_length > 0) {
+    goto again;
+  }
+
+  if (dtls->transport.pull_data_awaited_length == 0) {
+  again:
+    DBG("dtls: call pull_func, no data available");
+    gnutls_transport_set_errno(dtls->session, EAGAIN);
+    return -1;
+  }
+
+  if (size >= dtls->transport.pull_data_awaited_length) {
+    length = dtls->transport.pull_data_awaited_length;
+    dtls->transport.pull_data_offset_start = length; // to disable repeated reads, wait for callback
+    memcpy(data, dtls->transport.pull_data, length);
+
+    DBG("dtls: call pull_func, %d bytes readed", length);
+  } else {
+    int remainder = dtls->transport.pull_data_awaited_length - dtls->transport.pull_data_offset_start;
+    if (remainder <= 0) goto callback;
+    size_t copy_length = remainder > size ? size : remainder;
+
+    assert((copy_length + dtls->transport.pull_data_offset_start)<=dtls->transport.pull_data_allocated_length);
+    memcpy(data, dtls->transport.pull_data + dtls->transport.pull_data_offset_start, copy_length);
+
+    dtls->transport.pull_data_offset_start += copy_length;
+    length = copy_length;
+
+    DBG("dtls: call pull_func, %d of %d bytes readed", dtls->transport.pull_data_offset_start, dtls->transport.pull_data_awaited_length);
+
+    if (dtls->transport.pull_data_offset_start < dtls->transport.pull_data_awaited_length) goto exit;
+  }
+
+callback:
+  DBG("dtls: call pull_func, enqueue callback");
+
+  status = napi_acquire_threadsafe_function(dtls->transport.pull_func);
+  if (status != napi_ok) goto release;
+
+  status = napi_call_threadsafe_function(dtls->transport.pull_func, NULL, napi_tsfn_blocking);
+  if (status != napi_ok) goto release;
+
+  status = napi_release_threadsafe_function(dtls->transport.pull_func, napi_tsfn_release);
+  if (status != napi_ok) {
+  release:
+    DBG("dtls: call pull_func, failed to enqueue callback");
+    gnutls_transport_set_errno(dtls->session, EIO);
+    return -1;
+  }
+
+exit:
+  return length;
 }
 
 static napi_value dtls_set_debug_mode(napi_env env, napi_callback_info cb) {
@@ -455,4 +534,101 @@ static napi_value dtls_set_debug_mode(napi_env env, napi_callback_info cb) {
 
   NAPI_CALL(napi_get_value_bool(env, argv[0], &debugMode));
   return NULL;
+}
+
+static int dtls_pull_timeout_func(gnutls_transport_ptr_t ptr, unsigned int ms) {
+  dtls_session_t* dtls = ptr;
+
+  size_t size = dtls->transport.pull_data_awaited_length - dtls->transport.pull_data_offset_start;
+
+  if (size > 0) {
+    DBG("dtls: call pull_timeout_func, wait for %d bytes to read", size);
+  }
+
+  return size;
+}
+
+static napi_value dtls_set_pull_func(napi_env env, napi_callback_info cb) {
+  DBG("dtls: set read func");
+  size_t argc = 3, length;
+  napi_value argv[3], result, resource_name;
+  bool is_dtls_session, is_buffer;
+  dtls_session_t* dtls;
+  napi_valuetype is_callback;
+  void* buffer;
+
+  NAPI_CALL(napi_get_cb_info(env, cb, &argc, argv, NULL, NULL));
+  if (argc < 3) {
+    NAPI_THROW("Missing arguments");
+  }
+
+  NAPI_CALL(napi_check_object_type_tag(env, argv[0], &dtls_session_type_tag, &is_dtls_session));
+  if (!is_dtls_session) {
+    NAPI_THROW_TYPE("Invalid session handle");
+  }
+
+  NAPI_CALL(napi_unwrap(env, argv[0], (void**)&dtls));
+
+  NAPI_CALL(napi_is_buffer(env, argv[1], &is_buffer));
+  if (!is_buffer) {
+    NAPI_THROW_TYPE("Argument #2 should be a Buffer");
+  }
+
+  NAPI_CALL(napi_typeof(env, argv[2], &is_callback));
+  if (is_callback != napi_function) {
+    NAPI_THROW_TYPE("Argument #3 should be a Function");
+  }
+
+  NAPI_CALL(napi_get_buffer_info(env, argv[1], &buffer, &length));
+  if (length > dtls->transport.pull_data_allocated_length) {
+    NAPI_THROW("Invalid buffer size");
+  }
+
+  memcpy(dtls->transport.pull_data, buffer, length);
+  dtls->transport.pull_data_awaited_length = length;
+  dtls->transport.pull_data_offset_start = 0;
+
+  if (dtls->transport.is_pull_func_created) {
+    NAPI_CALL(napi_release_threadsafe_function(dtls->transport.pull_func, napi_tsfn_abort));
+    dtls->transport.is_pull_func_created = false;
+  }
+
+  NAPI_CALL(napi_create_string_utf8(env, "dtls::pull_func", NAPI_AUTO_LENGTH, &resource_name));
+  NAPI_CALL(napi_create_threadsafe_function(
+                                            env,
+                                            argv[2],
+                                            NULL,
+                                            resource_name,
+                                            0,
+                                            1, // Once the number of threads making use of
+                                               // a napi_threadsafe_function reaches zero, no further threads
+                                               // can start making use of it.
+                                            NULL,
+                                            NULL,
+                                            (void*)dtls,
+                                            dtls_pull_func_call_js,
+                                            &dtls->transport.pull_func
+  ));
+  dtls->transport.is_pull_func_created = true;
+
+  return result;
+}
+
+static void dtls_pull_func_call_js(napi_env env, napi_value cb, void* context, void* data) {
+  DBG("dtls: call read callback");
+
+  dtls_session_t* dtls = context;
+  napi_value argv, globalThis;
+  size_t argc = 0;
+
+  NAPI_CALL(napi_get_global(env, &globalThis));
+  NAPI_CALL(napi_call_function(env, globalThis, cb, argc, &argv, NULL));
+
+  dtls->transport.pull_data_awaited_length = 0;
+  dtls->transport.pull_data_offset_start = 0;
+
+  if (dtls->transport.is_pull_func_created) {
+    NAPI_CALL(napi_release_threadsafe_function(dtls->transport.pull_func, napi_tsfn_abort));
+    dtls->transport.is_pull_func_created = false;
+  }
 }
