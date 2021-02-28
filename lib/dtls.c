@@ -86,6 +86,8 @@ typedef struct {
   gnutls_session_t session;
   gnutls_certificate_credentials_t credentials;
   gnutls_priority_t priority;
+  char* priority_string;
+  bool have_priority;
   handshake_priv_t handshake;
   transport_priv_t transport;
 } dtls_session_t;
@@ -115,6 +117,7 @@ static int dtls_pull_timeout_func(gnutls_transport_ptr_t ptr, unsigned int ms);
 static napi_value dtls_set_debug_mode(napi_env env, napi_callback_info cb);
 static napi_value dtls_set_pull_func(napi_env env, napi_callback_info cb);
 static void dtls_pull_func_call_js(napi_env env, napi_value cb, void* context, void* data);
+static napi_value dtls_set_priority(napi_env env, napi_callback_info cb);
 
 static dtls_session_t* dtls_open_handle() {
   return (dtls_session_t*) gnutls_malloc(sizeof(dtls_session_t));
@@ -140,12 +143,18 @@ static void dtls_close_handle(napi_env env, dtls_session_t* dtls) {
 
   gnutls_free(dtls->transport.pull_data);
   gnutls_certificate_free_credentials(dtls->credentials);
+
+  if (dtls->have_priority) {
+    gnutls_free(dtls->priority_string);
+    gnutls_priority_deinit(dtls->priority);
+  }
+
   gnutls_deinit(dtls->session);
   gnutls_free(dtls);
 }
 
 NAPI_MODULE_INIT() {
-  napi_value gnutls_version, create_session, set_mtu, get_mtu, handshake, push_func, pull_func, set_debug_mode;
+  napi_value gnutls_version, create_session, set_mtu, get_mtu, handshake, push_func, pull_func, set_debug_mode, priority;
 
   CALL(gnutls_global_init());
 
@@ -174,6 +183,9 @@ NAPI_MODULE_INIT() {
 
   NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_pull_func, NULL, &pull_func));
   NAPI_CALL(napi_set_named_property(env, exports, "recv", pull_func));
+
+  NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_priority, NULL, &priority));
+  NAPI_CALL(napi_set_named_property(env, exports, "set_priority", priority));
 
   return exports;
 }
@@ -214,7 +226,10 @@ static napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
 
   CALL(gnutls_init(&dtls->session, (unsigned int)flags));
   CALL(gnutls_certificate_allocate_credentials(&dtls->credentials));
+  CALL(gnutls_certificate_set_x509_system_trust(dtls->credentials));
+  CALL(gnutls_credentials_set(dtls->session, GNUTLS_CRD_CERTIFICATE, dtls->credentials));
   CALL(gnutls_set_default_priority(dtls->session));
+
   gnutls_session_set_ptr(dtls->session, dtls);
   gnutls_transport_set_ptr(dtls->session, dtls);
 
@@ -231,6 +246,8 @@ static napi_value dtls_create_session(napi_env env, napi_callback_info cb) {
   dtls->transport.pull_data = gnutls_malloc(MAX_UDP);
   dtls->transport.pull_data_allocated_length = MAX_UDP;
   dtls->transport.is_pull_func_created = false;
+
+  dtls->have_priority = false;
 
   NAPI_CALL(napi_create_object(env, &result));
   NAPI_CALL(napi_type_tag_object(env, result, &dtls_session_type_tag));
@@ -360,6 +377,8 @@ static void dtls_handshake_complete(napi_env env, napi_status status, void* data
   if (dtls->handshake.errcode < GNUTLS_E_SUCCESS) {
     NAPI_CALL(napi_create_string_utf8(env, gnutls_strerror(dtls->handshake.errcode), NAPI_AUTO_LENGTH, &message));
     NAPI_CALL(napi_create_error(env, NULL, message, &err));
+  } else {
+    argc = 0;
   }
   napi_value* argv = &err;
 
@@ -631,4 +650,43 @@ static void dtls_pull_func_call_js(napi_env env, napi_value cb, void* context, v
     NAPI_CALL(napi_release_threadsafe_function(dtls->transport.pull_func, napi_tsfn_abort));
     dtls->transport.is_pull_func_created = false;
   }
+}
+
+static napi_value dtls_set_priority(napi_env env, napi_callback_info cb) {
+  DBG("dtls: set_priority");
+  size_t argc = 2, length, bufsize = 100;
+  napi_value argv[2], result;
+  bool is_dtls_session;
+  dtls_session_t* dtls;
+  napi_valuetype is_string;
+
+  NAPI_CALL(napi_get_cb_info(env, cb, &argc, argv, NULL, NULL));
+  if (argc < 2) {
+    NAPI_THROW("Missing arguments");
+  }
+
+  NAPI_CALL(napi_check_object_type_tag(env, argv[0], &dtls_session_type_tag, &is_dtls_session));
+  if (!is_dtls_session) {
+    NAPI_THROW_TYPE("Invalid session handle");
+  }
+
+  NAPI_CALL(napi_unwrap(env, argv[0], (void**)&dtls));
+
+  NAPI_CALL(napi_typeof(env, argv[1], &is_string));
+  if (is_string != napi_string) {
+    NAPI_THROW_TYPE("Argument #2 should be a String");
+  }
+
+  if (dtls->have_priority) {
+    gnutls_free(dtls->priority_string);
+  }
+
+  dtls->priority_string = (char*)gnutls_malloc(bufsize);
+  NAPI_CALL(napi_get_value_string_latin1(env, argv[1], dtls->priority_string, bufsize, &length));
+
+  CALL(gnutls_priority_init2(&dtls->priority, dtls->priority_string, NULL, GNUTLS_PRIORITY_INIT_DEF_APPEND));
+  CALL(gnutls_priority_set(dtls->session, dtls->priority));
+  dtls->have_priority = true;
+
+  return result;
 }
