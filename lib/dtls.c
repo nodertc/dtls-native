@@ -179,13 +179,13 @@ NAPI_MODULE_INIT() {
   NAPI_CALL(napi_set_named_property(env, exports, "handshake", handshake));
 
   NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_push_func, NULL, &push_func));
-  NAPI_CALL(napi_set_named_property(env, exports, "send", push_func));
+  NAPI_CALL(napi_set_named_property(env, exports, "onsend", push_func));
 
   NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_debug_mode, NULL, &set_debug_mode));
   NAPI_CALL(napi_set_named_property(env, exports, "set_debug_mode", set_debug_mode));
 
   NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_pull_func, NULL, &pull_func));
-  NAPI_CALL(napi_set_named_property(env, exports, "recv", pull_func));
+  NAPI_CALL(napi_set_named_property(env, exports, "onrecv", pull_func));
 
   NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_priority, NULL, &priority));
   NAPI_CALL(napi_set_named_property(env, exports, "set_priority", priority));
