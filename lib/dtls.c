@@ -118,6 +118,7 @@ static napi_value dtls_set_debug_mode(napi_env env, napi_callback_info cb);
 static napi_value dtls_set_pull_func(napi_env env, napi_callback_info cb);
 static void dtls_pull_func_call_js(napi_env env, napi_value cb, void* context, void* data);
 static napi_value dtls_set_priority(napi_env env, napi_callback_info cb);
+static napi_value dtls_bye(napi_env env, napi_callback_info cb);
 
 static dtls_session_t* dtls_open_handle() {
   return (dtls_session_t*) gnutls_malloc(sizeof(dtls_session_t));
@@ -154,7 +155,9 @@ static void dtls_close_handle(napi_env env, dtls_session_t* dtls) {
 }
 
 NAPI_MODULE_INIT() {
-  napi_value gnutls_version, create_session, set_mtu, get_mtu, handshake, push_func, pull_func, set_debug_mode, priority;
+  napi_value gnutls_version, create_session, set_mtu, get_mtu,
+            handshake, push_func, pull_func, set_debug_mode,
+            priority, bye;
 
   CALL(gnutls_global_init());
 
@@ -186,6 +189,9 @@ NAPI_MODULE_INIT() {
 
   NAPI_CALL(napi_create_function(env, NULL, 0, dtls_set_priority, NULL, &priority));
   NAPI_CALL(napi_set_named_property(env, exports, "set_priority", priority));
+
+  NAPI_CALL(napi_create_function(env, NULL, 0, dtls_bye, NULL, &bye));
+  NAPI_CALL(napi_set_named_property(env, exports, "bye", bye));
 
   return exports;
 }
@@ -687,6 +693,30 @@ static napi_value dtls_set_priority(napi_env env, napi_callback_info cb) {
   CALL(gnutls_priority_init2(&dtls->priority, dtls->priority_string, NULL, GNUTLS_PRIORITY_INIT_DEF_APPEND));
   CALL(gnutls_priority_set(dtls->session, dtls->priority));
   dtls->have_priority = true;
+
+  return result;
+}
+
+static napi_value dtls_bye(napi_env env, napi_callback_info cb) {
+  DBG("dtls: gnutls_bye");
+  size_t argc = 1;
+  napi_value argv[1], result;
+  bool is_dtls_session;
+  dtls_session_t* dtls;
+
+  NAPI_CALL(napi_get_cb_info(env, cb, &argc, argv, NULL, NULL));
+  if (argc < 1) {
+    NAPI_THROW("Missing arguments");
+  }
+
+  NAPI_CALL(napi_check_object_type_tag(env, argv[0], &dtls_session_type_tag, &is_dtls_session));
+  if (!is_dtls_session) {
+    NAPI_THROW_TYPE("Invalid session handle");
+  }
+
+  NAPI_CALL(napi_unwrap(env, argv[0], (void**)&dtls));
+
+  CALL(gnutls_bye(dtls->session, GNUTLS_SHUT_WR));
 
   return result;
 }

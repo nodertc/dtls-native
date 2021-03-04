@@ -4,7 +4,8 @@
   "description": "DTLS in nodejs",
   "main": "src/index.js",
   "scripts": {
-    "test": "npx eslint src && npx jest"
+    "test": "npx eslint src && npx jest",
+    "server": "docker run -it --name dtlsd --rm -e \"GNUTLS_DEBUG_LEVEL=2\" -e \"PRIORITY=NORMAL:+AEAD:+ECDHE-RSA:+VERS-DTLS1.2\" -e \"KEYFILE=key-rsa.pem\" -e \"CERTFILE=cert-rsa.pem\" -p 4444:4444/udp nodertc/dtls-server:1"
   },
   "repository": {
     "type": "git",
