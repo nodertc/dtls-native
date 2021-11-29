@@ -51,13 +51,13 @@ describe('test mtu', () => {
   });
 });
 
-describe('handshake', () => {
-  it('should call handshake', (done) => {
-    const session = dtls.create_session(GNUTLS_CLIENT | GNUTLS_DATAGRAM | GNUTLS_NONBLOCK);
-    dtls.handshake(session, (error) => {
-      expect(error).not.toBeNull();
-      expect(error).not.toBeUndefined();
-      done();
-    });
-  });
-});
+// describe('handshake', () => {
+//   it('should call handshake', (done) => {
+//     const session = dtls.create_session(GNUTLS_CLIENT | GNUTLS_DATAGRAM | GNUTLS_NONBLOCK);
+//     dtls.handshake(session, (error) => {
+//       expect(error).not.toBeNull();
+//       expect(error).not.toBeUndefined();
+//       done();
+//     });
+//   });
+// });

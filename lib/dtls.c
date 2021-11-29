@@ -13,7 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
 **/
-#define NAPI_EXPERIMENTAL
+#define NAPI_VERSION 8
+
 #include <node_api.h>
 #include <gnutls/gnutls.h>
 #include <gnutls/dtls.h>

@@ -7,8 +7,10 @@ ARCHIVE_GMPLIB=https://gmplib.org/download/gmp/gmp-6.2.1.tar.xz
 # Build
 ROOT_DIR=${PWD}
 MAKE=make
-CFLAGS="-O3 -fPIC"
-CONFIGURE=./configure CFLAGS=${CFLAGS} --prefix=${ROOT_DIR}/dependencies
+CFLAGS=-O3 -fPIC
+PREFIX=${ROOT_DIR}/dependencies
+CCONFIGURE=./configure --prefix=${PREFIX} --libdir=${PREFIX}/lib
+CONFIGURE=${CCONFIGURE} CFLAGS="${CFLAGS}"
 CURL=curl -s
 EXTRACT_XZ=tar -xJ
 EXTRACT_GZ=tar -xz
@@ -59,9 +61,10 @@ nettle-3.7/configure:
 
 nettle-3.7/Makefile: nettle-3.7/configure dependencies/lib/libgmp.a
 	cd nettle-3.7 && \
-	${CONFIGURE} \
+	${CCONFIGURE} \
 		LDFLAGS="-L${ROOT_DIR}/dependencies/lib" \
 		LIBS="-lgmp" \
+		CFLAGS="${CFLAGS} -I${ROOT_DIR}/dependencies/include" \
 		--disable-documentation \
 		--enable-x86-aesni \
 		--enable-public-key \
